@@ -175,3 +175,93 @@ devices:
   - "/dev/fb0:/dev/fb0"
 ```
 
+---
+
+# Notebooks
+
+This repository contains two Java notebooks.
+
+## 1. Sense HAT Lakehouse Demo
+
+```text
+notebooks/Floci_Java25_SenseHAT_Lakehouse_Demo.ipynb
+```
+
+This is the main notebook. It reads live sensor data from the Raspberry Pi Sense HAT and writes the data to Floci using multiple Lakehouse table formats.
+
+The notebook demonstrates:
+
+- Reading temperature, humidity and pressure from Sense HAT
+- Using Java 25 inside Jupyter Notebook
+- Creating a Spark DataFrame
+- Writing and reading Apache Parquet
+- Writing and reading Apache Hudi
+- Writing and reading Delta Lake
+- Writing and reading Apache Iceberg
+
+The data is written to the following S3-compatible paths:
+
+```text
+s3://iot-raw/sensehat/temperature_parquet/
+s3://iot-hudi/sensehat/temperature_hudi/
+s3://iot-delta/sensehat/temperature_delta/
+s3://iot-iceberg/warehouse/
+```
+
+Run this notebook first.
+
+---
+
+## 2. Athena + Glue External Tables Demo
+
+```text
+notebooks/Floci_Java25_Athena_Glue_External_Tables_Demo.ipynb
+```
+
+This second notebook assumes that the first notebook has already written the data to Floci.
+
+It focuses on registering the generated data as external tables in a Glue-compatible catalog and querying those tables using Athena.
+
+The notebook demonstrates:
+
+- Creating a Glue database
+- Registering external tables for Parquet, Hudi, Delta Lake and Iceberg
+- Running `SELECT *` queries using Athena
+- Printing query results directly from the Java notebook
+
+The flow is:
+
+```text
+Data written by Notebook 1
+        ↓
+Floci S3-compatible storage
+        ↓
+Glue external tables
+        ↓
+Athena SELECT *
+```
+
+The notebook creates tables such as:
+
+```text
+iot.sensehat_parquet
+iot.sensehat_hudi
+iot.sensehat_delta
+iot.sensehat_iceberg
+```
+
+For the most reliable local test, start with the Parquet table first. Hudi, Delta Lake and Iceberg may require table-format-specific support from the local Athena-compatible engine.
+
+---
+
+## Recommended Execution Order
+
+Run the notebooks in this order:
+
+```text
+1. Floci_Java25_SenseHAT_Lakehouse_Demo.ipynb
+2. Floci_Java25_Athena_Glue_External_Tables_Demo.ipynb
+```
+
+The first notebook creates the data.  
+The second notebook registers and queries the data.
