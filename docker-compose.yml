@@ -1,0 +1,39 @@
+services:
+  floci:
+    image: floci/floci:1.5.25
+    container_name: floci
+    platform: linux/arm64
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./floci-data:/app/data
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jupyter-java25-sensehat
+    platform: linux/arm64
+    depends_on:
+      - floci
+    ports:
+      - "8888:8888"
+      - "4040:4040"
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./ivy-cache:/home/jovyan/.ivy2
+    devices:
+      - "/dev/i2c-1:/dev/i2c-1"
+      - "/dev/fb0:/dev/fb0"
+    privileged: true
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://floci:4566
+      - JAVA_HOME=/opt/jdk-25
+      - PATH=/opt/jdk-25/bin:/usr/local/spark/bin:/opt/conda/bin:/usr/local/bin:/usr/bin:/bin
+    command: >
+      start-notebook.py
+      --IdentityProvider.token=''
+      --ServerApp.password=''
