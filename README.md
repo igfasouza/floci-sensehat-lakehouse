@@ -34,7 +34,6 @@ services:
   floci:
     image: floci/floci:1.5.25
     container_name: floci
-    platform: linux/arm64
     ports:
       - "4566:4566"
     volumes:
@@ -45,7 +44,6 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: jupyter-java25-sensehat
-    platform: linux/arm64
     depends_on:
       - floci
     ports:
@@ -54,13 +52,11 @@ services:
     volumes:
       - ./notebooks:/home/jovyan/work
       - ./ivy-cache:/home/jovyan/.ivy2
-
+      - /dev/input:/dev/input      # Sense HAT joystick events
     devices:
-      - "/dev/i2c-1:/dev/i2c-1"
-      - "/dev/fb0:/dev/fb0"
-
+      - "/dev/i2c-1:/dev/i2c-1"    # sensors + LED matrix
+      - "/dev/fb0:/dev/fb0"        # LED matrix framebuffer
     privileged: true
-
     environment:
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
@@ -68,7 +64,6 @@ services:
       - AWS_ENDPOINT_URL=http://floci:4566
       - JAVA_HOME=/opt/jdk-25
       - PATH=/opt/jdk-25/bin:/usr/local/spark/bin:/opt/conda/bin:/usr/local/bin:/usr/bin:/bin
-
     command: >
       start-notebook.py
       --IdentityProvider.token=''
@@ -84,20 +79,20 @@ FROM quay.io/jupyter/all-spark-notebook:latest
 
 USER root
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    unzip \
     ca-certificates \
     i2c-tools \
-    libgpiod2 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -L -o /tmp/jdk25.tar.gz \
-    https://download.java.net/java/GA/jdk25/latest/binaries/openjdk-25_linux-aarch64_bin.tar.gz \
-    && mkdir -p /opt \
-    && tar -xzf /tmp/jdk25.tar.gz -C /opt \
-    && mv /opt/jdk-25* /opt/jdk-25 \
-    && rm /tmp/jdk25.tar.gz
+# Adoptium Temurin JDK 25 (aarch64). Override JDK_URL at build time
+# to pin to a specific point release.
+ARG JDK_URL="https://api.adoptium.net/v3/binary/latest/25/ga/linux/aarch64/jdk/hotspot/normal/eclipse"
+RUN curl -fsSL "${JDK_URL}" -o /tmp/jdk25.tar.gz \
+    && mkdir -p /opt/jdk-25 \
+    && tar -xzf /tmp/jdk25.tar.gz -C /opt/jdk-25 --strip-components=1 \
+    && rm /tmp/jdk25.tar.gz \
+    && /opt/jdk-25/bin/java -version
 
 ENV JAVA_HOME=/opt/jdk-25
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
@@ -124,15 +119,12 @@ docker compose up --build
 
 # Create the S3 Buckets
 
-Once Floci is running, create the buckets used by the notebook:
+The Lakehouse notebook (`02_SenseHAT_Lakehouse_Demo.ipynb`) creates its own buckets on startup, so you can skip this step. If you want to create them manually beforehand:
 
 ```bash
 aws s3 mb s3://iot-raw --endpoint-url http://localhost:4566
-
 aws s3 mb s3://iot-hudi --endpoint-url http://localhost:4566
-
 aws s3 mb s3://iot-delta --endpoint-url http://localhost:4566
-
 aws s3 mb s3://iot-iceberg --endpoint-url http://localhost:4566
 ```
 
@@ -146,58 +138,79 @@ Open your browser:
 http://<RASPBERRY_PI_IP>:8888
 ```
 
-Then open:
-
-```
-notebooks/Floci_Java25_SenseHAT_Lakehouse_Demo.ipynb
-```
+Then run the notebooks in numeric order — the filenames themselves indicate the order.
 
 ---
 
 # Sense HAT Access
 
-The most important part of the Docker Compose configuration is giving the container access to the Raspberry Pi I2C bus.
+The Sense HAT talks to the Pi through three different kernel interfaces, so the container needs access to all of them:
 
 ```yaml
+volumes:
+  - /dev/input:/dev/input        # joystick events (evdev)
 devices:
-  - "/dev/i2c-1:/dev/i2c-1"
-
+  - "/dev/i2c-1:/dev/i2c-1"      # sensors + LED matrix (I2C bus)
+  - "/dev/fb0:/dev/fb0"          # LED matrix framebuffer
 privileged: true
 ```
 
-Without these settings, the Jupyter container will not be able to communicate with the Sense HAT over I2C.
+Symptoms if one is missing:
 
-If you also want to use the LED matrix, expose the framebuffer as well:
-
-```yaml
-devices:
-  - "/dev/i2c-1:/dev/i2c-1"
-  - "/dev/fb0:/dev/fb0"
-```
+| Missing              | Symptom                                                     |
+|----------------------|-------------------------------------------------------------|
+| `/dev/i2c-1`         | All sensor reads fail — no HTS221 / LPS25H / LSM9DS1        |
+| `/dev/fb0`           | LED matrix stays dark                                       |
+| `/dev/input`         | `getEvents()` / `waitForEvent()` / joystick listeners fail  |
 
 ---
 
 # Notebooks
 
-This repository contains two Java notebooks.
+This repository contains three Java notebooks, numbered in the order they should be run.
 
-## 1. Sense HAT Lakehouse Demo
+## 01. Sense HAT API Tour
 
 ```text
-notebooks/Floci_Java25_SenseHAT_Lakehouse_Demo.ipynb
+notebooks/01_SenseHAT_API_Tour.ipynb
 ```
 
-This is the main notebook. It reads live sensor data from the Raspberry Pi Sense HAT and writes the data to Floci using multiple Lakehouse table formats.
+A hands-on tour of the entire `com.pi4j.drivers.hat.raspberry.SenseHat` API — no Spark or Floci involved, just the sensor board. Great starting point to confirm your Sense HAT wiring works before moving on to the Lakehouse demo.
 
 The notebook demonstrates:
 
-- Reading temperature, humidity and pressure from Sense HAT
+- Environmental sensors: humidity (HTS221), pressure (LPS25H), temperature from both chips, light/colour (TCS3400)
+- IMU: accelerometer, gyroscope, orientation (degrees and radians), magnetometer, compass heading, and `setImuConfig`
+- LED matrix pixels: `clear`, `fill`, `setPixel`, `getPixel`, `setPixels` (1-D and 2-D), `getPixels`
+- LED matrix orientation: rotation and horizontal/vertical flip
+- LED matrix text: `showLetter` and `showMessage` with colours, scroll speed, and direction
+- Direct access to the underlying `GraphicsDisplayDriver` / `GraphicsDisplay`
+- Joystick in all three access modes: polling (`getEvents`), blocking (`waitForEvent`), and listener (`addJoystickListener`)
+- The generic `getAllSensors()` list
+- Proper lifecycle: `senseHat.close()` and `pi4j.shutdown()`
+
+Reference for the underlying driver: [pi4j-drivers SenseHat.java](https://github.com/igfasouza/pi4j-drivers/blob/igfasouza/src/main/java/com/pi4j/drivers/hat/raspberry/SenseHat.java).
+
+---
+
+## 02. Sense HAT Lakehouse Demo
+
+```text
+notebooks/02_SenseHAT_Lakehouse_Demo.ipynb
+```
+
+The main lakehouse notebook. It reads live sensor data from the Sense HAT and writes it to Floci using multiple lakehouse table formats.
+
+The notebook demonstrates:
+
+- Reading temperature, humidity and pressure from the Sense HAT (temperature is averaged from both the humidity and pressure chips)
+- Bootstrapping the required S3 buckets on Floci
 - Using Java 25 inside Jupyter Notebook
-- Creating a Spark DataFrame
+- Building a Spark DataFrame from Java records via `Row` + `StructType`
 - Writing and reading Apache Parquet
-- Writing and reading Apache Hudi
-- Writing and reading Delta Lake
-- Writing and reading Apache Iceberg
+- Writing and reading Apache Hudi (partitioned by event date, composite record key)
+- Writing and reading Delta Lake (plus generating the symlink-format manifest for Athena)
+- Writing and reading Apache Iceberg (Hadoop catalog)
 
 The data is written to the following S3-compatible paths:
 
@@ -205,40 +218,36 @@ The data is written to the following S3-compatible paths:
 s3://iot-raw/sensehat/temperature_parquet/
 s3://iot-hudi/sensehat/temperature_hudi/
 s3://iot-delta/sensehat/temperature_delta/
-s3://iot-iceberg/warehouse/
+s3://iot-iceberg/warehouse/default/temperature_iceberg/
 ```
-
-Run this notebook first.
 
 ---
 
-## 2. Athena + Glue External Tables Demo
+## 03. Athena + Glue External Tables Demo
 
 ```text
-notebooks/Floci_Java25_Athena_Glue_External_Tables_Demo.ipynb
+notebooks/03_Athena_Glue_External_Tables_Demo.ipynb
 ```
 
-This second notebook assumes that the first notebook has already written the data to Floci.
-
-It focuses on registering the generated data as external tables in a Glue-compatible catalog and querying those tables using Athena.
+Assumes notebook 02 has already written the data to Floci. It registers those datasets as external tables in a Glue-compatible catalog and queries them with Athena.
 
 The notebook demonstrates:
 
 - Creating a Glue database
-- Registering external tables for Parquet, Hudi, Delta Lake and Iceberg
-- Running `SELECT *` queries using Athena
+- Registering external tables for Parquet, Hudi, Delta Lake and Iceberg (resolving the Iceberg `metadata_location` from `version-hint.text`, and pointing Delta at the symlink manifest produced by notebook 02)
+- Running `SELECT *` and aggregation queries with Athena
 - Printing query results directly from the Java notebook
 
 The flow is:
 
 ```text
-Data written by Notebook 1
+Notebook 02 writes data
         ↓
 Floci S3-compatible storage
         ↓
-Glue external tables
+Glue external tables (Notebook 03)
         ↓
-Athena SELECT *
+Athena SELECT
 ```
 
 The notebook creates tables such as:
@@ -250,18 +259,16 @@ iot.sensehat_delta
 iot.sensehat_iceberg
 ```
 
-For the most reliable local test, start with the Parquet table first. Hudi, Delta Lake and Iceberg may require table-format-specific support from the local Athena-compatible engine.
+For the most reliable local test, start with the Parquet table. Hudi, Delta Lake and Iceberg may require table-format-specific support from the local Athena-compatible engine.
 
 ---
 
 ## Recommended Execution Order
 
-Run the notebooks in this order:
+The filenames already encode the order. Notebook 01 is optional — skip it if you already know your Sense HAT works.
 
 ```text
-1. Floci_Java25_SenseHAT_Lakehouse_Demo.ipynb
-2. Floci_Java25_Athena_Glue_External_Tables_Demo.ipynb
+01_SenseHAT_API_Tour.ipynb              (optional — sanity check the HAT)
+02_SenseHAT_Lakehouse_Demo.ipynb        (writes the data)
+03_Athena_Glue_External_Tables_Demo.ipynb  (queries the data)
 ```
-
-The first notebook creates the data.  
-The second notebook registers and queries the data.

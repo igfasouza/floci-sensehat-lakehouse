@@ -2,7 +2,6 @@ services:
   floci:
     image: floci/floci:1.5.25
     container_name: floci
-    platform: linux/arm64
     ports:
       - "4566:4566"
     volumes:
@@ -13,7 +12,6 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: jupyter-java25-sensehat
-    platform: linux/arm64
     depends_on:
       - floci
     ports:
@@ -22,6 +20,7 @@ services:
     volumes:
       - ./notebooks:/home/jovyan/work
       - ./ivy-cache:/home/jovyan/.ivy2
+      - /dev/input:/dev/input
     devices:
       - "/dev/i2c-1:/dev/i2c-1"
       - "/dev/fb0:/dev/fb0"
